@@ -338,57 +338,151 @@ class ExamCollator:
                 max_question_page = max(max_question_page, max(q_pages))
 
         print(f"  Last question page: {max_question_page}")
-
-        # Create output PDF
-        output_pdf = fitz.open()
+        print(f"  Checking all {len(self.student_pdfs)} students for extra space...")
 
         # Collect extra space pages from all students
         extra_space_pages = []
+        students_with_extra = []
+        students_without_extra = []
 
         for student_pdf_path in self.student_pdfs:
             student_name = student_pdf_path.stem
             student_doc = fitz.open(student_pdf_path)
 
-            # Get all pages after the last question page
-            for page_num in range(max_question_page, len(student_doc)):
-                extra_space_pages.append({
-                    'page': student_doc[page_num],
-                    'student_name': student_name,
-                    'doc': student_doc  # Keep reference to prevent closing
-                })
+            # Count pages after the last question page
+            extra_pages_count = len(student_doc) - max_question_page
 
-        print(f"  Found {len(extra_space_pages)} extra space pages across all students")
+            if extra_pages_count > 0:
+                students_with_extra.append(f"{student_name} ({extra_pages_count} page(s))")
+                # Get all pages after the last question page
+                for page_num in range(max_question_page, len(student_doc)):
+                    extra_space_pages.append({
+                        'page': student_doc[page_num],
+                        'student_name': student_name,
+                        'page_number': page_num - max_question_page + 1,
+                        'total_extra_pages': extra_pages_count,
+                        'doc': student_doc  # Keep reference to prevent closing
+                    })
+            else:
+                students_without_extra.append(student_name)
+                student_doc.close()
 
-        # Create 2-up layout pages
-        for i in range(0, len(extra_space_pages), 2):
-            page1_info = extra_space_pages[i]
-            page2_info = extra_space_pages[i + 1] if i + 1 < len(extra_space_pages) else None
+        # Report findings
+        print(f"\n  Students WITH extra space ({len(students_with_extra)}):")
+        for student_info in students_with_extra:
+            print(f"    - {student_info}")
 
-            self.create_two_up_landscape_page(
-                page1_info['page'],
-                page2_info['page'] if page2_info else None,
-                output_pdf,
-                page1_info['student_name'],
-                page2_info['student_name'] if page2_info else None
+        if students_without_extra:
+            print(f"\n  Students WITHOUT extra space ({len(students_without_extra)}):")
+            for student_name in students_without_extra:
+                print(f"    - {student_name}")
+
+        print(f"\n  Total extra space pages found: {len(extra_space_pages)}")
+
+        if len(extra_space_pages) == 0:
+            print(f"  [SKIP] No extra space pages found")
+            return
+
+        # Get available question numbers
+        available_questions = sorted(list(self.questions_by_main.keys()))
+        print(f"\n  Available questions: {', '.join(available_questions)}")
+
+        # Map extra space pages to questions
+        print(f"\n  Please map each extra space page to a question:")
+        print(f"  Format: Enter question number (e.g., '1' for Q1) or 'skip' to ignore")
+        print()
+
+        page_mappings = []
+        for idx, page_info in enumerate(extra_space_pages, start=1):
+            print(f"  [{idx}/{len(extra_space_pages)}] {page_info['student_name']} - Extra page {page_info['page_number']}/{page_info['total_extra_pages']}")
+            while True:
+                response = input(f"      Map to Question (1-7) or 'skip': ").strip()
+                if response.lower() == 'skip':
+                    print(f"      Skipping this page")
+                    break
+                elif response.isdigit():
+                    q_num = int(response)
+                    q_id = f"Q{q_num}"
+                    if q_id in available_questions:
+                        page_mappings.append({
+                            'page_info': page_info,
+                            'question_id': q_id,
+                            'question_num': q_num
+                        })
+                        print(f"      Mapped to {q_id}")
+                        break
+                    else:
+                        print(f"      Invalid question number. Available: {', '.join([q[1:] for q in available_questions])}")
+                else:
+                    print(f"      Invalid input. Enter a number (1-7) or 'skip'")
+
+        # Close documents we won't use
+        closed_docs = set()
+        for page_info in extra_space_pages:
+            if id(page_info['doc']) not in closed_docs:
+                # Check if this page is mapped
+                is_mapped = any(pm['page_info'] == page_info for pm in page_mappings)
+                if not is_mapped:
+                    page_info['doc'].close()
+                    closed_docs.add(id(page_info['doc']))
+
+        if len(page_mappings) == 0:
+            print(f"\n  [SKIP] No extra space pages mapped to questions")
+            return
+
+        # Append extra space pages to the appropriate question PDFs
+        print(f"\n  Appending {len(page_mappings)} extra space page(s) to question PDFs...")
+
+        for mapping in page_mappings:
+            page_info = mapping['page_info']
+            q_id = mapping['question_id']
+            q_num = mapping['question_num']
+
+            # Open the existing question PDF
+            output_path = self.outputs_dir / f"{q_id}.pdf"
+            if not output_path.exists():
+                print(f"    [WARNING] {output_path.name} doesn't exist, skipping")
+                continue
+
+            existing_pdf = fitz.open(output_path)
+
+            # Get mark scheme pages for this question
+            question_rows = self.questions_by_main[q_id]
+            all_mark_scheme_pages = set()
+            for row in question_rows:
+                ms_pages = self.parse_page_range(row['Mark scheme page map'])
+                all_mark_scheme_pages.update(ms_pages)
+            all_mark_scheme_pages = sorted(list(all_mark_scheme_pages))
+
+            # Open mark scheme and get pages
+            mark_scheme_doc = fitz.open(self.mark_scheme_pdf)
+            mark_scheme_page_objs = [mark_scheme_doc[p - 1] for p in all_mark_scheme_pages]
+
+            # Create the extra space page with mark scheme
+            question_label = f"Extra Space Question {q_num}"
+            self.create_landscape_page(
+                page_info['page'],
+                mark_scheme_page_objs,
+                existing_pdf,
+                page_info['student_name'],
+                question_label,
+                ""
             )
 
-        # Close all student documents
-        closed_docs = set()
+            # Save the updated PDF
+            existing_pdf.save(str(output_path), incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+            existing_pdf.close()
+            mark_scheme_doc.close()
+
+            print(f"    [DONE] Appended {page_info['student_name']}'s extra space to {output_path.name}")
+
+        # Close remaining documents
         for page_info in extra_space_pages:
             if id(page_info['doc']) not in closed_docs:
                 page_info['doc'].close()
                 closed_docs.add(id(page_info['doc']))
 
-        # Save output PDF
-        if len(output_pdf) > 0:
-            output_path = self.outputs_dir / "Extra_space.pdf"
-            page_count = len(output_pdf)
-            output_pdf.save(str(output_path))
-            output_pdf.close()
-            print(f"  [DONE] Saved {output_path.name} ({page_count} pages, {len(extra_space_pages)} student pages)")
-        else:
-            output_pdf.close()
-            print(f"  [SKIP] No extra space pages found")
+        print(f"\n  [COMPLETE] Extra space pages processed")
 
     def collate_all(self):
         """Collate all questions"""

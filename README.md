@@ -54,7 +54,8 @@ python collate_responses.py
 3. Find collated PDFs in the `outputs/` directory:
    - `Q1.pdf` - All students' responses to Question 1 (all sub-parts)
    - `Q2.pdf` - All students' responses to Question 2 (all sub-parts)
-   - etc.
+   - `Q3.pdf` through `Q7.pdf` - Remaining questions
+   - `Extra_space.pdf` - All extra space pages (2 students per page)
 
 ## Features
 
@@ -63,14 +64,23 @@ python collate_responses.py
 - **Multi-page handling** - Handles questions and mark schemes spanning multiple pages
 - **Landscape layout** - 60/40 split (student response / mark scheme)
 - **Question grouping** - Sub-questions grouped by main question number
+- **Student identification** - Each page shows student name and question number
+- **Extra space collection** - Automatically collates extra work pages in 2-up format
 
 ## Output Format
 
+### Question PDFs (Q1.pdf - Q7.pdf)
 Each output PDF contains:
 - One page per student per question page
 - Student response on the left (60% width)
 - Mark scheme on the right (40% width)
 - Multi-page mark schemes stacked vertically on the right side
+- Student name overlay at bottom left (e.g., "Anmoldeep Question 1 (page 1/2)")
+
+### Extra Space PDF (Extra_space.pdf)
+- Two student pages side-by-side in landscape format (50/50 split)
+- Collects all pages after the last question from each student
+- Student name overlay on each page (e.g., "Harmanpreet Extra Space")
 
 ## Notes
 
