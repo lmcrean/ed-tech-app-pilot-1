@@ -260,6 +260,136 @@ class ExamCollator:
 
         print(f"  [DONE] Saved {output_path.name} ({page_count} pages)")
 
+    def create_two_up_landscape_page(self, page1, page2, output_pdf, student1_name, student2_name=None):
+        """
+        Create a landscape page with two student pages side-by-side
+
+        Args:
+            page1: fitz.Page object for left student page
+            page2: fitz.Page object for right student page (can be None)
+            output_pdf: fitz.Document to add the new page to
+            student1_name: Name of the first student (left)
+            student2_name: Name of the second student (right, optional)
+        """
+        # Standard page sizes (A4)
+        A4_WIDTH = 595  # points
+        A4_HEIGHT = 842  # points
+
+        # Landscape dimensions
+        landscape_width = A4_HEIGHT  # 842
+        landscape_height = A4_WIDTH  # 595
+
+        # Create new landscape page
+        new_page = output_pdf.new_page(width=landscape_width, height=landscape_height)
+
+        # Calculate dimensions for 50/50 split
+        half_width = landscape_width / 2  # ~421 points
+
+        # Place first student page on left side
+        left_rect = fitz.Rect(0, 0, half_width, landscape_height)
+        new_page.show_pdf_page(left_rect, page1.parent, page1.number)
+
+        # Add label for first student
+        self._add_label_to_rect(new_page, left_rect, student1_name, "Extra Space")
+
+        # Place second student page on right side (if provided)
+        if page2:
+            right_rect = fitz.Rect(half_width, 0, landscape_width, landscape_height)
+            new_page.show_pdf_page(right_rect, page2.parent, page2.number)
+
+            if student2_name:
+                self._add_label_to_rect(new_page, right_rect, student2_name, "Extra Space")
+
+        return new_page
+
+    def _add_label_to_rect(self, page, rect, student_name, label):
+        """Helper to add a label overlay to a specific rectangle area"""
+        bar_height = 40
+        bar_rect = fitz.Rect(rect.x0, rect.y1 - bar_height, rect.x1, rect.y1)
+
+        # Draw semi-transparent dark gray rectangle
+        shape = page.new_shape()
+        shape.draw_rect(bar_rect)
+        shape.finish(fill=(0.3, 0.3, 0.3), fill_opacity=0.85)
+        shape.commit()
+
+        # Add text label
+        label_text = f"{student_name} {label}"
+
+        # Insert text in white
+        text_point = fitz.Point(rect.x0 + 10, rect.y1 - 12)
+        page.insert_text(
+            text_point,
+            label_text,
+            fontsize=14,
+            fontname="helv",
+            color=(1, 1, 1)
+        )
+
+    def collate_extra_space(self):
+        """Collate all extra space pages (pages after the last question)"""
+        print(f"\nProcessing Extra Space pages...")
+
+        # Determine the last question page from the page mapping
+        max_question_page = 0
+        for _, row in self.page_map_df.iterrows():
+            q_pages = self.parse_page_range(row['Question Page Map'])
+            if q_pages:
+                max_question_page = max(max_question_page, max(q_pages))
+
+        print(f"  Last question page: {max_question_page}")
+
+        # Create output PDF
+        output_pdf = fitz.open()
+
+        # Collect extra space pages from all students
+        extra_space_pages = []
+
+        for student_pdf_path in self.student_pdfs:
+            student_name = student_pdf_path.stem
+            student_doc = fitz.open(student_pdf_path)
+
+            # Get all pages after the last question page
+            for page_num in range(max_question_page, len(student_doc)):
+                extra_space_pages.append({
+                    'page': student_doc[page_num],
+                    'student_name': student_name,
+                    'doc': student_doc  # Keep reference to prevent closing
+                })
+
+        print(f"  Found {len(extra_space_pages)} extra space pages across all students")
+
+        # Create 2-up layout pages
+        for i in range(0, len(extra_space_pages), 2):
+            page1_info = extra_space_pages[i]
+            page2_info = extra_space_pages[i + 1] if i + 1 < len(extra_space_pages) else None
+
+            self.create_two_up_landscape_page(
+                page1_info['page'],
+                page2_info['page'] if page2_info else None,
+                output_pdf,
+                page1_info['student_name'],
+                page2_info['student_name'] if page2_info else None
+            )
+
+        # Close all student documents
+        closed_docs = set()
+        for page_info in extra_space_pages:
+            if id(page_info['doc']) not in closed_docs:
+                page_info['doc'].close()
+                closed_docs.add(id(page_info['doc']))
+
+        # Save output PDF
+        if len(output_pdf) > 0:
+            output_path = self.outputs_dir / "Extra_space.pdf"
+            page_count = len(output_pdf)
+            output_pdf.save(str(output_path))
+            output_pdf.close()
+            print(f"  [DONE] Saved {output_path.name} ({page_count} pages, {len(extra_space_pages)} student pages)")
+        else:
+            output_pdf.close()
+            print(f"  [SKIP] No extra space pages found")
+
     def collate_all(self):
         """Collate all questions"""
         # Create outputs directory if it doesn't exist
@@ -272,6 +402,9 @@ class ExamCollator:
         # Process each main question
         for main_q_id in sorted(self.questions_by_main.keys()):
             self.collate_question(main_q_id, self.questions_by_main[main_q_id])
+
+        # Process extra space pages
+        self.collate_extra_space()
 
         print(f"\n{'='*60}")
         print("Collation complete!")
