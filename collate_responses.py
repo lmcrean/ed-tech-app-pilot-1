@@ -40,7 +40,7 @@ class ExamCollator:
 
     def discover_inputs(self):
         """Auto-discover input files from standard directory structure"""
-        print("🔍 Discovering input files...")
+        print("Discovering input files...")
 
         # Find mark scheme PDF
         mark_scheme_dir = self.inputs_dir / "mark-scheme"
@@ -48,7 +48,7 @@ class ExamCollator:
         if not mark_scheme_pdfs:
             raise FileNotFoundError(f"No PDF found in {mark_scheme_dir}")
         self.mark_scheme_pdf = mark_scheme_pdfs[0]
-        print(f"  ✓ Mark scheme: {self.mark_scheme_pdf.name}")
+        print(f"  [OK] Mark scheme: {self.mark_scheme_pdf.name}")
 
         # Find question paper PDF
         question_paper_dir = self.inputs_dir / "question-paper"
@@ -56,7 +56,7 @@ class ExamCollator:
         if not question_paper_pdfs:
             raise FileNotFoundError(f"No PDF found in {question_paper_dir}")
         self.question_paper_pdf = question_paper_pdfs[0]
-        print(f"  ✓ Question paper: {self.question_paper_pdf.name}")
+        print(f"  [OK] Question paper: {self.question_paper_pdf.name}")
 
         # Find page mapping CSV
         page_mapping_dir = self.inputs_dir / "page-mapping"
@@ -64,29 +64,37 @@ class ExamCollator:
         if not page_mapping_csvs:
             raise FileNotFoundError(f"No CSV found in {page_mapping_dir}")
         self.page_mapping_csv = page_mapping_csvs[0]
-        print(f"  ✓ Page mapping: {self.page_mapping_csv.name}")
+        print(f"  [OK] Page mapping: {self.page_mapping_csv.name}")
 
         # Find all student response PDFs
         student_responses_dir = self.inputs_dir / "student-responses"
         self.student_pdfs = sorted(list(student_responses_dir.glob("*.pdf")))
         if not self.student_pdfs:
             raise FileNotFoundError(f"No student PDFs found in {student_responses_dir}")
-        print(f"  ✓ Found {len(self.student_pdfs)} student response PDFs")
+        print(f"  [OK] Found {len(self.student_pdfs)} student response PDFs")
 
     def parse_page_mapping(self):
         """Parse the page mapping CSV and group questions by main number"""
-        print(f"\n📊 Parsing page mapping...")
+        print(f"\nParsing page mapping...")
 
-        self.page_map_df = pd.read_csv(self.page_mapping_csv)
+        # Try to read as tab-separated, fallback to comma-separated
+        try:
+            self.page_map_df = pd.read_csv(self.page_mapping_csv, sep='\t')
+        except:
+            self.page_map_df = pd.read_csv(self.page_mapping_csv)
 
         # Group questions by main question number (Q1, Q2, etc.)
         for _, row in self.page_map_df.iterrows():
-            q_id = row['Q']
+            q_id = str(row['Q']).strip()
+            # Skip rows that don't start with a digit (like TOTAL row)
+            match = re.match(r'^(\d+)', q_id)
+            if not match:
+                continue
             # Extract main question number (e.g., "1" from "1a", "2" from "2a(i)")
-            main_q = re.match(r'^(\d+)', q_id).group(1)
+            main_q = match.group(1)
             self.questions_by_main[f"Q{main_q}"].append(row)
 
-        print(f"  ✓ Grouped into {len(self.questions_by_main)} main questions")
+        print(f"  [OK] Grouped into {len(self.questions_by_main)} main questions")
         for main_q in sorted(self.questions_by_main.keys()):
             sub_questions = [row['Q'] for row in self.questions_by_main[main_q]]
             print(f"    {main_q}: {', '.join(sub_questions)}")
@@ -102,7 +110,7 @@ class ExamCollator:
         else:
             return [int(page_str)]
 
-    def create_landscape_page(self, student_page, mark_scheme_pages, output_pdf):
+    def create_landscape_page(self, student_page, mark_scheme_pages, output_pdf, student_name, question_label, page_info=""):
         """
         Create a landscape page with student response on left and mark scheme on right
 
@@ -110,6 +118,9 @@ class ExamCollator:
             student_page: fitz.Page object for student response
             mark_scheme_pages: list of fitz.Page objects for mark scheme
             output_pdf: fitz.Document to add the new page to
+            student_name: Name of the student
+            question_label: Question identifier (e.g., "Question 1", "Question 4")
+            page_info: Optional page info (e.g., "(part 1/3)")
         """
         # Standard page sizes (A4)
         A4_WIDTH = 595  # points
@@ -143,6 +154,32 @@ class ExamCollator:
             new_page.show_pdf_page(ms_rect_top, mark_scheme_pages[0].parent, mark_scheme_pages[0].number)
             new_page.show_pdf_page(ms_rect_bottom, mark_scheme_pages[1].parent, mark_scheme_pages[1].number)
 
+        # Add student identification overlay at the bottom
+        # Create semi-transparent dark background bar
+        bar_height = 40
+        bar_rect = fitz.Rect(0, landscape_height - bar_height, left_width, landscape_height)
+
+        # Draw semi-transparent dark gray rectangle
+        shape = new_page.new_shape()
+        shape.draw_rect(bar_rect)
+        shape.finish(fill=(0.3, 0.3, 0.3), fill_opacity=0.85)
+        shape.commit()
+
+        # Add text label
+        label_text = f"{student_name} {question_label}"
+        if page_info:
+            label_text += f" {page_info}"
+
+        # Insert text in white using built-in Helvetica font
+        text_point = fitz.Point(10, landscape_height - 12)  # 10px from left, 12px from bottom
+        new_page.insert_text(
+            text_point,
+            label_text,
+            fontsize=14,
+            fontname="helv",
+            color=(1, 1, 1)  # White text
+        )
+
         return new_page
 
     def collate_question(self, main_q_id, question_rows):
@@ -153,7 +190,7 @@ class ExamCollator:
             main_q_id: Main question ID (e.g., "Q1")
             question_rows: List of row dicts containing question data
         """
-        print(f"\n📝 Processing {main_q_id}...")
+        print(f"\nProcessing {main_q_id}...")
 
         # Collect all question pages and mark scheme pages for this main question
         all_question_pages = set()
@@ -185,23 +222,43 @@ class ExamCollator:
             student_name = student_pdf_path.stem
             student_doc = fitz.open(student_pdf_path)
 
-            # Extract student pages for this question (convert to 0-indexed)
+            # Collect valid pages for this student first to determine total count
+            student_pages_to_process = []
             for q_page_num in all_question_pages:
                 if q_page_num - 1 < len(student_doc):
-                    student_page = student_doc[q_page_num - 1]
+                    student_pages_to_process.append((q_page_num, student_doc[q_page_num - 1]))
 
-                    # Create landscape page with student response and mark scheme
-                    self.create_landscape_page(student_page, mark_scheme_page_objs, output_pdf)
+            total_pages = len(student_pages_to_process)
+            question_label = f"Question {main_q_id[1:]}"  # Remove 'Q' prefix
+
+            # Process each page for this student
+            for page_idx, (q_page_num, student_page) in enumerate(student_pages_to_process, start=1):
+                # Determine page info string
+                if total_pages > 1:
+                    page_info = f"(page {page_idx}/{total_pages})"
+                else:
+                    page_info = ""
+
+                # Create landscape page with student response and mark scheme
+                self.create_landscape_page(
+                    student_page,
+                    mark_scheme_page_objs,
+                    output_pdf,
+                    student_name,
+                    question_label,
+                    page_info
+                )
 
             student_doc.close()
 
         # Save output PDF
         output_path = self.outputs_dir / f"{main_q_id}.pdf"
+        page_count = len(output_pdf)
         output_pdf.save(str(output_path))
         output_pdf.close()
         mark_scheme_doc.close()
 
-        print(f"  ✅ Saved {output_path.name} ({len(output_pdf)} pages)")
+        print(f"  [DONE] Saved {output_path.name} ({page_count} pages)")
 
     def collate_all(self):
         """Collate all questions"""
@@ -209,7 +266,7 @@ class ExamCollator:
         self.outputs_dir.mkdir(exist_ok=True)
 
         print(f"\n{'='*60}")
-        print("🚀 Starting collation process...")
+        print("Starting collation process...")
         print(f"{'='*60}")
 
         # Process each main question
@@ -217,7 +274,7 @@ class ExamCollator:
             self.collate_question(main_q_id, self.questions_by_main[main_q_id])
 
         print(f"\n{'='*60}")
-        print("✨ Collation complete!")
+        print("Collation complete!")
         print(f"{'='*60}")
         print(f"Output files saved to: {self.outputs_dir}")
 
@@ -228,7 +285,7 @@ class ExamCollator:
             self.parse_page_mapping()
             self.collate_all()
         except Exception as e:
-            print(f"\n❌ Error: {e}", file=sys.stderr)
+            print(f"\n[ERROR] {e}", file=sys.stderr)
             raise
 
 
