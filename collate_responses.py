@@ -126,8 +126,21 @@ class ExamCollator:
         A4_WIDTH = 595  # points
         A4_HEIGHT = 842  # points
 
+        # Determine page width based on number of mark scheme pages
+        num_ms_pages = len(mark_scheme_pages)
+        student_width = 421  # Fixed width for student response
+
+        if num_ms_pages <= 2:
+            # Standard width for 1-2 mark schemes
+            landscape_width = A4_HEIGHT  # 842
+            left_width = landscape_width * 0.5  # ~421 points
+        else:  # 3 or more pages
+            # Expanded width for 2x2 grid (30% wider mark schemes)
+            ms_page_width = 364  # Width for each MS page in grid (30% wider than 280)
+            landscape_width = student_width + (2 * ms_page_width)  # 421 + 728 = 1149
+            left_width = student_width
+
         # Landscape dimensions with 20% extra space for marking section
-        landscape_width = A4_HEIGHT  # 842
         content_height = A4_WIDTH  # 595 (original content area)
         marking_section_height = 119  # 20% of A4_WIDTH for marking boxes
         landscape_height = content_height + marking_section_height  # 714
@@ -135,16 +148,11 @@ class ExamCollator:
         # Create new landscape page
         new_page = output_pdf.new_page(width=landscape_width, height=landscape_height)
 
-        # Calculate dimensions for 50/50 split (only for content area, not marking section)
-        left_width = landscape_width * 0.5  # ~421 points
-        right_width = landscape_width * 0.5  # ~421 points
-
         # Place student response on left side (only in content area)
         student_rect = fitz.Rect(0, 0, left_width, content_height)
         new_page.show_pdf_page(student_rect, student_page.parent, student_page.number)
 
         # Place mark scheme(s) on right side (only in content area)
-        num_ms_pages = len(mark_scheme_pages)
         if num_ms_pages > 0:
             if num_ms_pages <= 2:
                 # Stack vertically for 1-2 pages
@@ -156,7 +164,7 @@ class ExamCollator:
                     new_page.show_pdf_page(ms_rect, ms_page.parent, ms_page.number)
             else:
                 # Use 2x2 grid for 3-4 pages
-                ms_width = right_width / 2
+                ms_width = 364  # 30% wider than standard
                 ms_height = content_height / 2
                 for i, ms_page in enumerate(mark_scheme_pages[:4]):  # Max 4 pages in 2x2 grid
                     col = i % 2
