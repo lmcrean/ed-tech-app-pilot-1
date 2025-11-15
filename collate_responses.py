@@ -126,38 +126,52 @@ class ExamCollator:
         A4_WIDTH = 595  # points
         A4_HEIGHT = 842  # points
 
-        # Landscape dimensions
+        # Landscape dimensions with 20% extra space for marking section
         landscape_width = A4_HEIGHT  # 842
-        landscape_height = A4_WIDTH  # 595
+        content_height = A4_WIDTH  # 595 (original content area)
+        marking_section_height = 119  # 20% of A4_WIDTH for marking boxes
+        landscape_height = content_height + marking_section_height  # 714
 
         # Create new landscape page
         new_page = output_pdf.new_page(width=landscape_width, height=landscape_height)
 
-        # Calculate dimensions for 60/40 split
-        left_width = landscape_width * 0.6  # ~505 points
-        right_width = landscape_width * 0.4  # ~337 points
+        # Calculate dimensions for 50/50 split (only for content area, not marking section)
+        left_width = landscape_width * 0.5  # ~421 points
+        right_width = landscape_width * 0.5  # ~421 points
 
-        # Place student response on left side
-        student_rect = fitz.Rect(0, 0, left_width, landscape_height)
+        # Place student response on left side (only in content area)
+        student_rect = fitz.Rect(0, 0, left_width, content_height)
         new_page.show_pdf_page(student_rect, student_page.parent, student_page.number)
 
-        # Place mark scheme(s) on right side
-        if len(mark_scheme_pages) == 1:
-            # Single mark scheme page - use full right side
-            ms_rect = fitz.Rect(left_width, 0, landscape_width, landscape_height)
-            new_page.show_pdf_page(ms_rect, mark_scheme_pages[0].parent, mark_scheme_pages[0].number)
-        elif len(mark_scheme_pages) == 2:
-            # Two mark scheme pages - stack vertically
-            ms_height = landscape_height / 2
-            ms_rect_top = fitz.Rect(left_width, 0, landscape_width, ms_height)
-            ms_rect_bottom = fitz.Rect(left_width, ms_height, landscape_width, landscape_height)
-            new_page.show_pdf_page(ms_rect_top, mark_scheme_pages[0].parent, mark_scheme_pages[0].number)
-            new_page.show_pdf_page(ms_rect_bottom, mark_scheme_pages[1].parent, mark_scheme_pages[1].number)
+        # Place mark scheme(s) on right side (only in content area)
+        num_ms_pages = len(mark_scheme_pages)
+        if num_ms_pages > 0:
+            if num_ms_pages <= 2:
+                # Stack vertically for 1-2 pages
+                ms_height = content_height / num_ms_pages
+                for i, ms_page in enumerate(mark_scheme_pages):
+                    y_start = i * ms_height
+                    y_end = (i + 1) * ms_height
+                    ms_rect = fitz.Rect(left_width, y_start, landscape_width, y_end)
+                    new_page.show_pdf_page(ms_rect, ms_page.parent, ms_page.number)
+            else:
+                # Use 2x2 grid for 3-4 pages
+                ms_width = right_width / 2
+                ms_height = content_height / 2
+                for i, ms_page in enumerate(mark_scheme_pages[:4]):  # Max 4 pages in 2x2 grid
+                    col = i % 2
+                    row = i // 2
+                    x_start = left_width + (col * ms_width)
+                    x_end = x_start + ms_width
+                    y_start = row * ms_height
+                    y_end = y_start + ms_height
+                    ms_rect = fitz.Rect(x_start, y_start, x_end, y_end)
+                    new_page.show_pdf_page(ms_rect, ms_page.parent, ms_page.number)
 
-        # Add student identification overlay at the bottom
+        # Add student identification overlay at the bottom of content area
         # Create semi-transparent dark background bar
         bar_height = 40
-        bar_rect = fitz.Rect(0, landscape_height - bar_height, left_width, landscape_height)
+        bar_rect = fitz.Rect(0, content_height - bar_height, left_width, content_height)
 
         # Draw semi-transparent dark gray rectangle
         shape = new_page.new_shape()
@@ -171,7 +185,7 @@ class ExamCollator:
             label_text += f" {page_info}"
 
         # Insert text in white using built-in Helvetica font
-        text_point = fitz.Point(10, landscape_height - 12)  # 10px from left, 12px from bottom
+        text_point = fitz.Point(10, content_height - 12)  # 10px from left, 12px from bottom of content
         new_page.insert_text(
             text_point,
             label_text,
@@ -180,7 +194,60 @@ class ExamCollator:
             color=(1, 1, 1)  # White text
         )
 
+        # Add marking section at the bottom
+        self._draw_marking_grid(new_page, landscape_width, content_height, marking_section_height)
+
         return new_page
+
+    def _draw_marking_grid(self, page, page_width, content_height, marking_section_height):
+        """
+        Draw a marking grid with 12 numbered boxes at the bottom of the page
+
+        Args:
+            page: fitz.Page object to draw on
+            page_width: Width of the page
+            content_height: Y-coordinate where marking section starts (bottom of content)
+            marking_section_height: Height available for marking section
+        """
+        # Configuration for 12 boxes in 1 row
+        num_boxes = 12
+        box_size = 70  # Square boxes of 70x70 points
+
+        # Calculate starting position to center the grid
+        total_grid_width = num_boxes * box_size
+        start_x = (page_width - total_grid_width) / 2
+        start_y = content_height + (marking_section_height - box_size) / 2
+
+        # Create shape object for drawing
+        shape = page.new_shape()
+
+        # Draw each box
+        for i in range(num_boxes):
+            box_x = start_x + (i * box_size)
+            box_y = start_y
+
+            # Draw rectangle with bold black border
+            box_rect = fitz.Rect(box_x, box_y, box_x + box_size, box_y + box_size)
+            shape.draw_rect(box_rect)
+
+        # Finish drawing all boxes with bold black borders and white fill
+        shape.finish(fill=(1, 1, 1), color=(0, 0, 0), width=2)
+        shape.commit()
+
+        # Add numbers to each box (1-12) in light gray
+        for i in range(num_boxes):
+            box_x = start_x + (i * box_size)
+            box_y = start_y
+
+            # Position number in top-left corner of box
+            number_point = fitz.Point(box_x + 4, box_y + 12)
+            page.insert_text(
+                number_point,
+                str(i + 1),
+                fontsize=10,
+                fontname="hebo",  # Helvetica Bold
+                color=(0.7, 0.7, 0.7)  # Light gray
+            )
 
     def collate_question(self, main_q_id, question_rows):
         """
@@ -192,27 +259,31 @@ class ExamCollator:
         """
         print(f"\nProcessing {main_q_id}...")
 
-        # Collect all question pages and mark scheme pages for this main question
+        # Build a mapping of question page -> mark scheme pages
+        page_to_mark_scheme = {}
         all_question_pages = set()
-        all_mark_scheme_pages = set()
 
         for row in question_rows:
             q_pages = self.parse_page_range(row['Question Page Map'])
             ms_pages = self.parse_page_range(row['Mark scheme page map'])
-            all_question_pages.update(q_pages)
-            all_mark_scheme_pages.update(ms_pages)
+
+            # For each question page, collect its mark scheme pages
+            for q_page in q_pages:
+                if q_page not in page_to_mark_scheme:
+                    page_to_mark_scheme[q_page] = set()
+                page_to_mark_scheme[q_page].update(ms_pages)
+                all_question_pages.add(q_page)
 
         all_question_pages = sorted(list(all_question_pages))
-        all_mark_scheme_pages = sorted(list(all_mark_scheme_pages))
 
         print(f"  Question pages: {all_question_pages}")
-        print(f"  Mark scheme pages: {all_mark_scheme_pages}")
+        print(f"  Mark scheme mapping:")
+        for q_page in all_question_pages:
+            ms_pages = sorted(list(page_to_mark_scheme[q_page]))
+            print(f"    Page {q_page} -> MS pages {ms_pages}")
 
         # Open mark scheme PDF
         mark_scheme_doc = fitz.open(self.mark_scheme_pdf)
-
-        # Get mark scheme pages (convert to 0-indexed)
-        mark_scheme_page_objs = [mark_scheme_doc[p - 1] for p in all_mark_scheme_pages]
 
         # Create output PDF
         output_pdf = fitz.open()
@@ -238,6 +309,10 @@ class ExamCollator:
                     page_info = f"(page {page_idx}/{total_pages})"
                 else:
                     page_info = ""
+
+                # Get mark scheme pages for this specific question page
+                ms_page_nums = sorted(list(page_to_mark_scheme[q_page_num]))
+                mark_scheme_page_objs = [mark_scheme_doc[p - 1] for p in ms_page_nums]
 
                 # Create landscape page with student response and mark scheme
                 self.create_landscape_page(
@@ -275,30 +350,35 @@ class ExamCollator:
         A4_WIDTH = 595  # points
         A4_HEIGHT = 842  # points
 
-        # Landscape dimensions
+        # Landscape dimensions with 20% extra space for marking section
         landscape_width = A4_HEIGHT  # 842
-        landscape_height = A4_WIDTH  # 595
+        content_height = A4_WIDTH  # 595 (original content area)
+        marking_section_height = 119  # 20% of A4_WIDTH for marking boxes
+        landscape_height = content_height + marking_section_height  # 714
 
         # Create new landscape page
         new_page = output_pdf.new_page(width=landscape_width, height=landscape_height)
 
-        # Calculate dimensions for 50/50 split
+        # Calculate dimensions for 50/50 split (only for content area)
         half_width = landscape_width / 2  # ~421 points
 
-        # Place first student page on left side
-        left_rect = fitz.Rect(0, 0, half_width, landscape_height)
+        # Place first student page on left side (only in content area)
+        left_rect = fitz.Rect(0, 0, half_width, content_height)
         new_page.show_pdf_page(left_rect, page1.parent, page1.number)
 
         # Add label for first student
         self._add_label_to_rect(new_page, left_rect, student1_name, "Extra Space")
 
-        # Place second student page on right side (if provided)
+        # Place second student page on right side (if provided, only in content area)
         if page2:
-            right_rect = fitz.Rect(half_width, 0, landscape_width, landscape_height)
+            right_rect = fitz.Rect(half_width, 0, landscape_width, content_height)
             new_page.show_pdf_page(right_rect, page2.parent, page2.number)
 
             if student2_name:
                 self._add_label_to_rect(new_page, right_rect, student2_name, "Extra Space")
+
+        # Add marking section at the bottom
+        self._draw_marking_grid(new_page, landscape_width, content_height, marking_section_height)
 
         return new_page
 

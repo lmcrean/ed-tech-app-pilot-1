@@ -4,7 +4,8 @@
       "Bash(tree:*)",
       "Bash(pip install:*)",
       "Bash(python collate_responses.py:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(python -m py_compile:*)"
     ],
     "deny": [],
     "ask": []
