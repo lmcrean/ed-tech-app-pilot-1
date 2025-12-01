@@ -5,7 +5,9 @@
       "Bash(pip install:*)",
       "Bash(python collate_responses.py:*)",
       "Bash(dir:*)",
-      "Bash(python -m py_compile:*)"
+      "Bash(python -m py_compile:*)",
+      "Bash(python:*)",
+      "Bash(findstr:*)"
     ],
     "deny": [],
     "ask": []

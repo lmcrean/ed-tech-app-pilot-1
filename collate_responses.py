@@ -14,6 +14,7 @@ and mark schemes on the right in landscape format.
 
 import os
 import sys
+import argparse
 from pathlib import Path
 import pandas as pd
 import fitz  # PyMuPDF
@@ -572,6 +573,142 @@ class ExamCollator:
 
         print(f"\n  [COMPLETE] Extra space pages processed")
 
+    def get_student_names(self):
+        """Extract student names from the student-responses directory"""
+        student_names = []
+        for pdf_path in self.student_pdfs:
+            student_names.append(pdf_path.stem)
+        return sorted(student_names)
+
+    def extract_student_name_from_page(self, page):
+        """
+        Extract student name from the overlay text at the bottom of a marked page
+
+        Args:
+            page: fitz.Page object (landscape page with overlay)
+
+        Returns:
+            str: Student name (e.g., "alan") or None if not found
+        """
+        # Get all text from the page with position information
+        text_dict = page.get_text("dict")
+
+        # Look for text blocks in the bottom overlay area (y > 500)
+        for block in text_dict.get("blocks", []):
+            if "lines" in block:
+                for line in block["lines"]:
+                    # Check if this line is in the bottom overlay area
+                    if line["bbox"][1] > 500:  # y-coordinate > 500
+                        # Extract text from spans
+                        line_text = ""
+                        for span in line["spans"]:
+                            line_text += span["text"]
+
+                        # Pattern: "{StudentName} Question {N}" or "{StudentName} Extra Space"
+                        match = re.match(r'^(\w+)\s+(?:Question|Extra Space)', line_text.strip())
+                        if match:
+                            return match.group(1)
+
+        return None
+
+    def return_papers_to_students(self):
+        """
+        Return marked question papers to individual students
+
+        This method reads the marked question papers from inputs/marked-question-papers/,
+        extracts pages for each student, and creates individual PDFs in outputs/returned-QPs/
+        """
+        print(f"\n{'='*60}")
+        print("Returning papers to students...")
+        print(f"{'='*60}")
+
+        # Create output directory for returned papers
+        returned_qps_dir = self.outputs_dir / "returned-QPs"
+        returned_qps_dir.mkdir(exist_ok=True)
+
+        # Get marked question papers from inputs/marked-question-papers/
+        marked_papers_dir = self.inputs_dir / "marked-question-papers"
+        if not marked_papers_dir.exists():
+            print(f"[ERROR] Marked papers directory not found: {marked_papers_dir}")
+            return
+
+        # Get all Q*.pdf files
+        marked_pdfs = sorted(marked_papers_dir.glob("Q*.pdf"))
+        if not marked_pdfs:
+            print(f"[ERROR] No marked question papers found in {marked_papers_dir}")
+            return
+
+        print(f"Found {len(marked_pdfs)} marked question papers: {', '.join([p.name for p in marked_pdfs])}")
+
+        # Get student names
+        student_names = self.get_student_names()
+        print(f"Found {len(student_names)} students")
+
+        # Dictionary to store pages for each student: student_name -> [(question_num, page)]
+        student_pages = defaultdict(list)
+
+        # Process each marked question PDF
+        for marked_pdf_path in marked_pdfs:
+            # Extract question number from filename (e.g., "Q1.pdf" -> 1)
+            q_match = re.match(r'Q(\d+)', marked_pdf_path.stem)
+            if not q_match:
+                continue
+            q_num = int(q_match.group(1))
+
+            print(f"\nProcessing {marked_pdf_path.name}...")
+            marked_doc = fitz.open(marked_pdf_path)
+
+            # Process each page in the question PDF
+            for page_num in range(len(marked_doc)):
+                page = marked_doc[page_num]
+
+                # Extract student name from overlay
+                student_name = self.extract_student_name_from_page(page)
+
+                if student_name:
+                    # Store the page along with question number for sorting
+                    student_pages[student_name].append((q_num, marked_pdf_path, page_num, marked_doc))
+                else:
+                    print(f"  [WARNING] Could not extract student name from page {page_num + 1}")
+
+            print(f"  Extracted {len(marked_doc)} pages")
+
+        # Create individual PDFs for each student
+        print(f"\nCreating individual student PDFs...")
+
+        for student_name in sorted(student_pages.keys()):
+            pages_info = student_pages[student_name]
+
+            # Sort pages by question number to maintain order (Q1, Q2, ... Q7)
+            pages_info.sort(key=lambda x: x[0])
+
+            # Create a new PDF for this student
+            output_doc = fitz.open()
+
+            # Add all their pages in order
+            for q_num, pdf_path, page_num, source_doc in pages_info:
+                output_doc.insert_pdf(source_doc, from_page=page_num, to_page=page_num)
+
+            # Save the student's PDF
+            output_path = returned_qps_dir / f"{student_name}.pdf"
+            output_doc.save(str(output_path))
+            output_doc.close()
+
+            print(f"  [DONE] {student_name}.pdf ({len(pages_info)} pages)")
+
+        # Close all source documents
+        closed_docs = set()
+        for student_name, pages_info in student_pages.items():
+            for q_num, pdf_path, page_num, source_doc in pages_info:
+                if id(source_doc) not in closed_docs:
+                    source_doc.close()
+                    closed_docs.add(id(source_doc))
+
+        print(f"\n{'='*60}")
+        print(f"Papers returned to {len(student_pages)} students")
+        print(f"{'='*60}")
+        print(f"Output files saved to: {returned_qps_dir}")
+
     def collate_all(self):
         """Collate all questions"""
         # Create outputs directory if it doesn't exist
@@ -593,12 +730,23 @@ class ExamCollator:
         print(f"{'='*60}")
         print(f"Output files saved to: {self.outputs_dir}")
 
-    def run(self):
-        """Main execution flow"""
+    def run(self, return_papers=False):
+        """
+        Main execution flow
+
+        Args:
+            return_papers: If True, return marked papers to students instead of collating
+        """
         try:
             self.discover_inputs()
-            self.parse_page_mapping()
-            self.collate_all()
+
+            if return_papers:
+                # Just return the papers to students (no need to parse page mapping)
+                self.return_papers_to_students()
+            else:
+                # Normal collation process
+                self.parse_page_mapping()
+                self.collate_all()
         except Exception as e:
             print(f"\n[ERROR] {e}", file=sys.stderr)
             raise
@@ -606,8 +754,19 @@ class ExamCollator:
 
 def main():
     """Entry point for the script"""
+    parser = argparse.ArgumentParser(
+        description='Collate exam responses or return marked papers to students'
+    )
+    parser.add_argument(
+        '--return-papers',
+        action='store_true',
+        help='Return marked papers to individual students (reads from inputs/marked-question-papers/)'
+    )
+
+    args = parser.parse_args()
+
     collator = ExamCollator()
-    collator.run()
+    collator.run(return_papers=args.return_papers)
 
 
 if __name__ == "__main__":
